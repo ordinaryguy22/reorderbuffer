@@ -1,65 +1,78 @@
-// ================== ROB ==================
-module rob #(parameter ARCH=32, PHYS=64, ROBN=16,
-             AW=$clog2(ARCH), PW=5, RW=4)(
-  input  logic                 clk, rst,
-  // allocate at tail
-  input  logic                 alloc_en,
-  input  logic [AW-1:0]        ard_in,
-  input  logic [PW-1:0]        prd_new_in,
-  input  logic [PW-1:0]        prd_old_in,
-  output logic                 alloc_ok,
-  output logic [RW-1:0]        rob_idx_alloc,
-  // mark ready by PRD at WB
-  input  logic                 wb_en,
-  input  logic [PW-1:0]        wb_prd,
-  // commit at head
-  output logic                 commit_valid,
-  output logic [AW-1:0]        commit_ard,
-  output logic [PW-1:0]        commit_prd_new,
-  output logic [PW-1:0]        commit_prd_old,
-  input  logic                 commit_pop
-);
-  typedef struct packed {
-    logic        v;
-    logic        rdy;
-    logic [AW-1:0] ard;
-    logic [PW-1:0] prd_new, prd_old;
-  } entry_t;
-
-  entry_t q [ROBN-1:0];
-  logic [RW-1:0] head, tail;
-  logic [RW:0]   cnt;
-
-  assign alloc_ok       = (cnt != ROBN);
-  assign rob_idx_alloc  = tail;
-  assign commit_valid   = (cnt!=0) && q[head].v && q[head].rdy;
-  assign commit_ard     = q[head].ard;
-  assign commit_prd_new = q[head].prd_new;
-  assign commit_prd_old = q[head].prd_old;
-
-  integer i;
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      for (i=0;i<ROBN;i++) q[i] <= '0;
-      head<=0; tail<=0; cnt<=0;
-    end else begin
-      if (alloc_en && alloc_ok) begin
-        q[tail].v       <= 1'b1;
-        q[tail].rdy     <= 1'b0;
-        q[tail].ard     <= ard_in;
-        q[tail].prd_new <= prd_new_in;
-        q[tail].prd_old <= prd_old_in;
-        tail <= (tail+1==ROBN)?0:tail+1;
-        cnt  <= cnt+1;
-      end
-      if (wb_en) begin
-        for (i=0;i<ROBN;i++) if (q[i].v && q[i].prd_new==wb_prd) q[i].rdy <= 1'b1;
-      end
-      if (commit_pop && commit_valid) begin
-        q[head].v <= 1'b0;
-        head <= (head+1==ROBN)?0:head+1;
-        cnt  <= cnt-1;
-      end
+module rob(
+    input clk,rst,
+    input decode,
+    input logic [4:0] rdaddr,
+    input logic [5:0] pr,
+    input logic [63:0] current_pc,
+    input logic exception,
+    
+    input logic wb_en,
+    
+    input logic result_rd_tag,
+    input logic writeback,
+    
+    output logic [4:0] rd_rob,
+    
+    //reorder write: where the data from execution will be written into the rob register until it is committed
+    output logic [5:0] rob_pr, // the physical register where rob entry is aligned, given by RAT
+    output logic reorder, 
+    
+    //writeback
+    output logic wb_ready,
+    output logic [4:0] rd_id,
+    output logic [4:0] rob_pr
+ 
+    );
+    
+    typedef struct packed{
+    logic v;
+    logic [4:0] rd_id;
+    logic rd_v;
+    logic [5:0] pr;
+    logic [63:0] pc;
+    logic exception;
+    logic [4:0] tag;
+    } rob_entry_t;
+    
+    rob_entry_t ROB[32];
+    logic [4:0] head,tail;
+    
+    integer i;
+    always_ff @(posedge clk) begin
+        if(rst)begin
+            for(i=0;i<32;i++)begin
+                ROB[i] <= '0;
+                ROB[i].tag <= 32+i;
+            end
+            head <= 0;
+            tail <= 0;
+        end
+        
+        if(decode) begin
+            ROB[tail].v <= 1;
+            ROB[tail].rd_id <= rdaddr;
+            ROB[tail].rd_v <= 0;
+            ROB[tail].pr <= pr;
+            ROB[tail].pc <= current_pc;
+            ROB[tail].exception <= exception;
+            tail <= tail+1;
+        end
+        
+        if(reorder) begin
+            rob_pr <= ROB[result_rd_tag].pr;
+            ROB[result_rd_tag].v <= 1;
+        end
+                
+        if(writeback && ROB[head].rd_v == 1) begin            
+            wb_ready <=1;
+            rd_id <= ROB[head].rd_id;
+            rob_pr <= ROB[head].pr;
+            ROB[head] <= '0;
+            head <= head+1;
+       end
+        
     end
-  end
+    
+    
+    
 endmodule
